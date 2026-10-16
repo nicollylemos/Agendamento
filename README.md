@@ -248,6 +248,3 @@ Com mais de uma instância da API, deixe `WORKER_EMBUTIDO=true` em apenas uma.
 | `docs/FASE-*.md` | Detalhes de cada fase de desenvolvimento |
 | [`docs/PAINEL-WEB.md`](docs/PAINEL-WEB.md) | Telas do painel |
 
-## Licença
-
-Projeto acadêmico, desenvolvido por Nicolly Lemos da Silva — ADS, FATEC Sorocaba.
