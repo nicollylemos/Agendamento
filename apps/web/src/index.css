@@ -1,0 +1,67 @@
+/* Fonte do painel: Instrument Sans (uma família só, pesos 400–600) */
+@import '@fontsource-variable/instrument-sans';
+/* Fase 9 (RF07): fontes que o admin pode escolher para o site. Só baixam se forem usadas. */
+@import '@fontsource-variable/figtree';
+@import '@fontsource-variable/dm-sans';
+@import '@fontsource-variable/nunito';
+@import '@fontsource-variable/lora';
+@import '@fontsource-variable/playfair-display';
+@import 'tailwindcss';
+
+/* "inline": as classes usam a expressão direto, então as fontes escolhidas no painel
+   (variáveis definidas no elemento do site) valem ali, e não só no :root */
+@theme inline {
+  --font-sans: var(--site-fonte-texto, 'Instrument Sans Variable'), system-ui, sans-serif;
+  --font-titulo: var(--site-fonte-titulos, 'Instrument Sans Variable'), system-ui, sans-serif;
+}
+
+/* Visual minimalista: fundo branco, linhas finas em vez de sombras, grafite para texto e
+   ações, cor só onde ela quer dizer algo (erro, alerta, situação). */
+@theme {
+  --color-fundo: #f6f6f4; /* preenchimento sutil: hover, cabeçalho de tabela, selecionado */
+  --color-superficie: #ffffff;
+  --color-tinta: #26292a;
+  --color-tinta-suave: #6b6f6d; /* 5:1 no branco */
+  --color-borda: #ebeae7; /* linha fina entre blocos */
+  --color-borda-campo: #8f928f; /* contorno de campo, 3:1 com o branco (WCAG 1.4.11) */
+  --color-destaque: #26292a; /* ação principal = grafite */
+  --color-destaque-forte: #1b1d1e;
+  --color-destaque-claro: #f1f1ef;
+  --color-pinho: #26292a;
+  --color-pinho-claro: #3a3e3f;
+  --color-erro: #b3261e;
+  --color-erro-claro: #fcf1f0;
+  --color-alerta: #87580a;
+  --color-alerta-claro: #fbf5e8;
+  --color-ok: #2f7a5f; /* só em pontinhos de situação */
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+  body {
+    @apply bg-superficie text-tinta font-sans antialiased;
+    font-feature-settings: 'tnum' 1;
+    letter-spacing: -0.003em;
+  }
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.015em;
+  }
+  ::selection {
+    background: #e4e4e0;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-tinta;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

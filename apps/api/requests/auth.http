@@ -1,0 +1,101 @@
+# Teste as rotas pelo VS Code com a extensão "REST Client" (humao.rest-client).
+# Clique em "Send Request" em cima de cada bloco. Copie os tokens das respostas
+# para as variáveis abaixo.
+
+@api = http://localhost:3333/api/v1
+@mfaToken = cole-aqui
+@accessToken = cole-aqui
+@reauthToken = cole-aqui
+
+### RF01 — login (se a conta tiver 2FA, vem a etapa MFA)
+POST {{api}}/auth/login
+Content-Type: application/json
+
+{ "email": "voce@exemplo.com", "senha": "sua-senha-aqui" }
+
+### RF01 (opcional) — gerar QR Code do 2FA (abra o "qrCode" no navegador)
+POST {{api}}/auth/2fa/configurar
+Authorization: Bearer {{accessToken}}
+
+### RF01 (opcional) — ativar 2FA com o código do app (devolve os códigos de recuperação)
+POST {{api}}/auth/2fa/ativar
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "codigo": "123456" }
+
+### RF01 — desativar 2FA (senha + código)
+POST {{api}}/auth/2fa/desativar
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "senha": "sua-senha-aqui", "codigo": "123456" }
+
+### RF01 — com 2FA ativo: confirmar o código depois do login
+POST {{api}}/auth/2fa/verificar
+Content-Type: application/json
+
+{ "mfaToken": "{{mfaToken}}", "codigo": "123456" }
+
+### Quem sou eu
+GET {{api}}/auth/me
+Authorization: Bearer {{accessToken}}
+
+### 9.1 — renovar o access token (usa o cookie)
+POST {{api}}/auth/refresh
+X-Requested-With: agendamento
+
+### RF02 — convidar funcionário (o link aparece no terminal da API)
+POST {{api}}/admin/usuarios/convites
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "nome": "Ana", "email": "ana@exemplo.com", "perfil": "FUNCIONARIO" }
+
+### RF02 — funcionário aceita o convite
+POST {{api}}/auth/convite/aceitar
+Content-Type: application/json
+
+{ "token": "token-do-link", "senha": "senha-da-ana-123" }
+
+### Listar usuários
+GET {{api}}/admin/usuarios
+Authorization: Bearer {{accessToken}}
+
+### RF05 — desativar (troque o id)
+PATCH {{api}}/admin/usuarios/ID-DO-USUARIO/status
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "ativo": false }
+
+### 9.1 — reautenticar antes de ação crítica
+POST {{api}}/auth/reautenticar
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "senha": "sua-senha-aqui", "codigo": "123456" }
+
+### 9.2 — trocar perfil (exige o reauthToken acima)
+PATCH {{api}}/admin/usuarios/ID-DO-USUARIO/perfil
+Authorization: Bearer {{accessToken}}
+X-Reauth-Token: {{reauthToken}}
+Content-Type: application/json
+
+{ "perfil": "GERENTE" }
+
+### RF03 — esqueci a senha (o link aparece no terminal da API)
+POST {{api}}/auth/senha/esqueci
+Content-Type: application/json
+
+{ "email": "voce@exemplo.com" }
+
+### RF03 — redefinir
+POST {{api}}/auth/senha/redefinir
+Content-Type: application/json
+
+{ "token": "token-do-link", "senha": "nova-senha-bem-longa" }
+
+### Sair
+POST {{api}}/auth/logout
+X-Requested-With: agendamento

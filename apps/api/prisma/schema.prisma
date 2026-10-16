@@ -1,0 +1,823 @@
+// Modelos entram aos poucos, fase por fase (ver docs/REQUISITOS-STATUS.md).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Fase 1 ──────────────────────────────────────────────
+
+// RF06: dados da empresa. Existe uma linha só (id = 1).
+model Empresa {
+  id                   Int      @id @default(1)
+  nome                 String
+  documento            String? // CPF ou CNPJ, só dígitos/letras
+  email                String?
+  telefone             String?
+  whatsapp             String?
+  instagram            String?
+  facebook             String?
+  site                 String?
+  cep                  String?
+  logradouro           String?
+  numero               String?
+  complemento          String?
+  bairro               String?
+  cidade               String?
+  uf                   String?  @db.Char(2)
+  logoUrl              String?  @map("logo_url") // upload entra na Fase 9
+  fusoHorario          String   @default("America/Sao_Paulo") @map("fuso_horario")
+  horarioFuncionamento Json     @default("[]") @map("horario_funcionamento") // [{ diaSemana, abre, fecha }]
+  politicaCancelamento String?  @map("politica_cancelamento")
+  politicaAtraso       String?  @map("politica_atraso")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@map("empresas")
+}
+
+// ─── Fase 2: autenticação e permissões ───────────────────
+
+enum Perfil {
+  ADMIN
+  GERENTE
+  FUNCIONARIO
+}
+
+// RF01, RF05, seção 9.1
+model Usuario {
+  id        String  @id @default(uuid()) @db.Uuid
+  nome      String
+  email     String  @unique
+  senhaHash String  @map("senha_hash") // argon2id, nunca a senha
+  perfil    Perfil
+  ativo     Boolean @default(true) // RF05
+
+  // 2FA (RF01). Os segredos ficam cifrados com AES-256-GCM (9.3).
+  totpAtivo          Boolean  @default(false) @map("totp_ativo")
+  totpSecret         String?  @map("totp_secret")
+  totpSecretPendente String?  @map("totp_secret_pendente")
+  totpUltimoPasso    Int?     @map("totp_ultimo_passo") // impede reusar o mesmo código
+  codigosRecuperacao String[] @default([]) @map("codigos_recuperacao") // hash SHA-256, uso único
+
+  // Bloqueio progressivo (9.1)
+  tentativasFalhas Int       @default(0) @map("tentativas_falhas")
+  bloqueadoAte     DateTime? @map("bloqueado_ate")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  sessoes     Sessao[]
+  logs        LogAuditoria[]
+  funcionario Funcionario?
+
+  @@map("usuarios")
+}
+
+// Refresh token com rotação e detecção de reuso (9.1)
+model Sessao {
+  id              String    @id @default(uuid()) @db.Uuid
+  usuarioId       String    @map("usuario_id") @db.Uuid
+  familiaId       String    @map("familia_id") @db.Uuid
+  refreshHash     String    @unique @map("refresh_hash") // SHA-256 do token
+  ip              String?
+  userAgent       String?   @map("user_agent")
+  expiraEm        DateTime  @map("expira_em")
+  familiaExpiraEm DateTime  @map("familia_expira_em") // limite absoluto do login
+  revogadaEm      DateTime? @map("revogada_em")
+  substituidaPor  String?   @map("substituida_por") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@index([familiaId])
+  @@index([usuarioId])
+  @@map("sessoes")
+}
+
+enum TipoToken {
+  CONVITE
+  RESET_SENHA
+  ALERTA_RECEBEDOR // link "não fui eu" do e-mail de troca de recebedor (RF36)
+}
+
+// Tokens de uso único: convite (RF02) e recuperação de senha (RF03)
+model TokenUso {
+  id        String    @id @default(uuid()) @db.Uuid
+  tipo      TipoToken
+  tokenHash String    @unique @map("token_hash") // SHA-256; o token puro só vai no e-mail
+  email     String
+  dados     Json? // convite: { nome, perfil }
+  expiraEm  DateTime  @map("expira_em")
+  usadoEm   DateTime? @map("usado_em")
+  criadoPor String?   @map("criado_por") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([email, tipo])
+  @@map("tokens_uso")
+}
+
+// Seção 9.7: só inserção, nunca editado
+model LogAuditoria {
+  id         String   @id @default(uuid()) @db.Uuid
+  usuarioId  String?  @map("usuario_id") @db.Uuid
+  acao       String
+  entidade   String?
+  entidadeId String?  @map("entidade_id")
+  detalhes   Json?
+  ip         String?
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  usuario Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  @@index([usuarioId])
+  @@index([acao, createdAt])
+  @@map("logs_auditoria")
+}
+
+// ─── Fase 3: serviços e equipe ───────────────────────────
+
+// Profissional que atende. Pode existir sem login: o acesso ao painel é opcional
+// (o admin gera um link e manda pelo WhatsApp).
+model Funcionario {
+  id                String   @id @default(uuid()) @db.Uuid
+  usuarioId         String?  @unique @map("usuario_id") @db.Uuid // null = não acessa o painel
+  nome              String
+  telefone          String? // só dígitos, com DDD
+  email             String?
+  ativo             Boolean  @default(true) // inativo some do site e da agenda
+  cargo             String?
+  bio               String?
+  fotoUrl           String?  @map("foto_url") // upload entra na Fase 9
+  comissaoPadraoPct Decimal  @default(0) @map("comissao_padrao_pct") @db.Decimal(5, 2)
+  podeEditarHorario Boolean  @default(false) @map("pode_editar_horario") // RF19
+  exibirNoSite      Boolean  @default(true) @map("exibir_no_site")
+  ordem             Int      @default(0)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  usuario      Usuario?             @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+  servicos     ServicoFuncionario[]
+  jornada      JornadaFaixa[]
+  excecoes     ExcecaoHorario[]
+  bloqueios    Bloqueio[]
+  agendamentos Agendamento[]
+
+  @@map("funcionarios")
+}
+
+model CategoriaServico {
+  id        String    @id @default(uuid()) @db.Uuid
+  nome      String    @unique
+  ordem     Int       @default(0)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  servicos  Servico[]
+
+  @@map("categorias_servico")
+}
+
+// RF12
+model Servico {
+  id                  String     @id @default(uuid()) @db.Uuid
+  nome                String
+  categoriaId         String?    @map("categoria_id") @db.Uuid
+  descricao           String?
+  duracaoMin          Int        @map("duracao_min")
+  precoCentavos       Int        @map("preco_centavos") // dinheiro sempre em centavos (inteiro)
+  intervaloLimpezaMin Int        @default(0) @map("intervalo_limpeza_min")
+  fotoUrl             String?    @map("foto_url") // upload entra na Fase 9
+  ativo               Boolean    @default(true)
+  ordem               Int        @default(0)
+  // RF28: sinal próprio do serviço. HERDAR usa o padrão da empresa.
+  sinalModo           ModoSinal  @default(HERDAR) @map("sinal_modo")
+  sinalTipo           TipoSinal? @map("sinal_tipo")
+  sinalValor          Int?       @map("sinal_valor")
+  sinalPrazoMin       Int?       @map("sinal_prazo_min")
+  deletedAt           DateTime?  @map("deleted_at") // exclusão lógica: preserva o histórico
+  createdAt           DateTime   @default(now()) @map("created_at")
+  updatedAt           DateTime   @updatedAt @map("updated_at")
+
+  categoria    CategoriaServico?    @relation(fields: [categoriaId], references: [id], onDelete: SetNull)
+  funcionarios ServicoFuncionario[]
+  agendamentos Agendamento[]
+  fichaTecnica FichaTecnicaItem[]
+  custosExtras CustoExtraServico[]
+
+  @@index([ativo, deletedAt])
+  @@map("servicos")
+}
+
+// RF13: quem executa cada serviço, com preço e duração próprios (opcionais)
+model ServicoFuncionario {
+  servicoId     String   @map("servico_id") @db.Uuid
+  funcionarioId String   @map("funcionario_id") @db.Uuid
+  precoCentavos Int?     @map("preco_centavos") // null = usa o preço do serviço
+  duracaoMin    Int?     @map("duracao_min") // null = usa a duração do serviço
+  comissaoPct   Decimal? @map("comissao_pct") @db.Decimal(5, 2) // RF54: null = comissão padrão do profissional
+
+  servico     Servico     @relation(fields: [servicoId], references: [id], onDelete: Cascade)
+  funcionario Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+
+  @@id([servicoId, funcionarioId])
+  @@map("servicos_funcionarios")
+}
+
+// ─── Fase 4: horários ────────────────────────────────────
+// Horários são guardados em minutos desde a meia-noite (09:30 = 570),
+// no fuso da empresa. Cada dia pode ter várias faixas (o almoço é o buraco entre elas).
+
+// RF16: modelos de jornada reaproveitáveis
+model ModeloJornada {
+  id        String               @id @default(uuid()) @db.Uuid
+  nome      String               @unique
+  createdAt DateTime             @default(now()) @map("created_at")
+  updatedAt DateTime             @updatedAt @map("updated_at")
+  faixas    ModeloJornadaFaixa[]
+
+  @@map("modelos_jornada")
+}
+
+model ModeloJornadaFaixa {
+  id        String @id @default(uuid()) @db.Uuid
+  modeloId  String @map("modelo_id") @db.Uuid
+  diaSemana Int    @map("dia_semana") // 0 = domingo
+  inicioMin Int    @map("inicio_min")
+  fimMin    Int    @map("fim_min")
+
+  modelo ModeloJornada @relation(fields: [modeloId], references: [id], onDelete: Cascade)
+
+  @@index([modeloId])
+  @@map("modelos_jornada_faixas")
+}
+
+// RF17: jornada semanal de cada funcionário
+model JornadaFaixa {
+  id            String @id @default(uuid()) @db.Uuid
+  funcionarioId String @map("funcionario_id") @db.Uuid
+  diaSemana     Int    @map("dia_semana")
+  inicioMin     Int    @map("inicio_min")
+  fimMin        Int    @map("fim_min")
+
+  funcionario Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+
+  @@index([funcionarioId, diaSemana])
+  @@map("jornada_faixas")
+}
+
+enum TipoExcecao {
+  FOLGA
+  HORARIO_ESPECIAL
+}
+
+// RF17: exceção numa data (folga, feriado, horário estendido).
+// Sem funcionário = vale para a equipe toda (ex.: feriado).
+model ExcecaoHorario {
+  id            String      @id @default(uuid()) @db.Uuid
+  funcionarioId String?     @map("funcionario_id") @db.Uuid
+  data          DateTime    @db.Date
+  tipo          TipoExcecao
+  faixas        Json        @default("[]") // só para HORARIO_ESPECIAL: [{ inicioMin, fimMin }]
+  motivo        String?
+  criadoPor     String?     @map("criado_por") @db.Uuid
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  funcionario Funcionario? @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+
+  @@index([data])
+  @@index([funcionarioId, data])
+  @@map("excecoes_horario")
+}
+
+// RF18: bloqueio manual na agenda (compromisso, manutenção)
+model Bloqueio {
+  id            String   @id @default(uuid()) @db.Uuid
+  funcionarioId String   @map("funcionario_id") @db.Uuid
+  inicio        DateTime
+  fim           DateTime
+  motivo        String?
+  criadoPor     String?  @map("criado_por") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  funcionario Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+
+  @@index([funcionarioId, inicio])
+  @@map("bloqueios")
+}
+
+// ─── Fase 5: agendamento ─────────────────────────────────
+
+// RF22, RF25: regras da agenda (uma linha só, id = 1)
+model ConfigAgenda {
+  id                             Int       @id @default(1)
+  antecedenciaMinimaMin          Int       @default(120) @map("antecedencia_minima_min")
+  diasAFrente                    Int       @default(60) @map("dias_a_frente")
+  passoMin                       Int       @default(15) @map("passo_min") // de quanto em quanto oferecer horário
+  prazoCancelamentoHoras         Int       @default(24) @map("prazo_cancelamento_horas")
+  prazoReagendamentoHoras        Int       @default(24) @map("prazo_reagendamento_horas")
+  // RF28: sinal padrão (cada serviço pode personalizar)
+  sinalExige                     Boolean   @default(false) @map("sinal_exige")
+  sinalTipo                      TipoSinal @default(PERCENTUAL) @map("sinal_tipo")
+  sinalValor                     Int       @default(3000) @map("sinal_valor") // centavos (FIXO) ou centésimos de % (PERCENTUAL: 3000 = 30%)
+  sinalPrazoMin                  Int       @default(30) @map("sinal_prazo_min")
+  // RF32: devolve o sinal se o cliente cancelar com pelo menos X horas de antecedência
+  reembolsoAteHoras              Int       @default(24) @map("reembolso_ate_horas")
+  // Fluxo 6.2: pagamento que chega depois de expirar
+  reembolsoAutomaticoAposExpirar Boolean   @default(true) @map("reembolso_automatico_apos_expirar")
+  // Cores da agenda por situação (o admin escolhe) e meta de faturamento do mês (painel Início)
+  coresAgenda                    Json?     @map("cores_agenda")
+  metaMensalCentavos             Int?      @map("meta_mensal_centavos")
+  updatedAt                      DateTime  @updatedAt @map("updated_at")
+
+  @@map("config_agenda")
+}
+
+// RF04: cliente agenda sem senha. Identificado pelo telefone.
+model Cliente {
+  id                  String    @id @default(uuid()) @db.Uuid
+  nome                String
+  telefone            String    @unique // só dígitos, com DDD
+  email               String?
+  consentimentoLgpdEm DateTime? @map("consentimento_lgpd_em") // 9.6
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  agendamentos Agendamento[]
+  fidelidade   TransacaoFidelidade[]
+  resgates     ResgateFidelidade[]
+
+  @@index([email])
+  @@map("clientes")
+}
+
+// RF47: como o cliente pagou o restante no balcão (o sinal, quando há, é sempre Pix)
+enum FormaPagamento {
+  PIX
+  DINHEIRO
+  CARTAO_CREDITO
+  CARTAO_DEBITO
+  OUTRO
+}
+
+// RF26
+enum StatusAgendamento {
+  AGUARDANDO_PAGAMENTO
+  CONFIRMADO
+  EM_ATENDIMENTO
+  CONCLUIDO
+  CANCELADO
+  EXPIRADO
+  NAO_COMPARECEU
+}
+
+enum OrigemAgendamento {
+  ONLINE
+  PAINEL
+}
+
+// RF21, RF23, RF24
+// Trava no banco (RNF02): a migration desta fase cria uma "exclusion constraint" que
+// impede dois agendamentos ativos do mesmo funcionário com horários sobrepostos.
+// Ver scripts/trava-agenda.ts.
+model Agendamento {
+  id                 String            @id @default(uuid()) @db.Uuid
+  clienteId          String            @map("cliente_id") @db.Uuid
+  funcionarioId      String            @map("funcionario_id") @db.Uuid
+  servicoId          String            @map("servico_id") @db.Uuid
+  inicio             DateTime
+  fim                DateTime
+  fimOcupado         DateTime          @map("fim_ocupado") // fim + intervalo de limpeza
+  status             StatusAgendamento @default(CONFIRMADO)
+  // Cópia dos valores no momento do agendamento: mudar o serviço depois não altera o que foi combinado
+  valorCentavos      Int               @map("valor_centavos")
+  duracaoMin         Int               @map("duracao_min")
+  limpezaMin         Int               @map("limpeza_min")
+  origem             OrigemAgendamento
+  observacao         String?
+  tokenGestaoHash    String?           @unique @map("token_gestao_hash") // link do cliente (RF25)
+  aceitePoliticaEm   DateTime?         @map("aceite_politica_em")
+  canceladoEm        DateTime?         @map("cancelado_em")
+  motivoCancelamento String?           @map("motivo_cancelamento")
+  // Fase 6: sinal (RF28–RF33) e lembretes (RF27)
+  sinalCentavos      Int               @default(0) @map("sinal_centavos") // calculado no servidor, nunca vem do front (9.3)
+  expiraSinalEm      DateTime?         @map("expira_sinal_em")
+  lembrete24hEm      DateTime?         @map("lembrete_24h_em")
+  lembrete2hEm       DateTime?         @map("lembrete_2h_em")
+  // Fase 7 (fluxo 6.3): custo dos produtos e extras gastos, registrado ao concluir
+  custoCentavos      Int?              @map("custo_centavos")
+  // RF07: respostas dos campos extras do formulário de agendamento ({ campoId: valor })
+  respostasExtras    Json?             @map("respostas_extras")
+  // Fase 10: registrados ao concluir (RF47 forma de pagamento do restante; RF54 comissão congelada)
+  formaPagamento     FormaPagamento?   @map("forma_pagamento")
+  comissaoCentavos   Int?              @map("comissao_centavos")
+  concluidoEm        DateTime?         @map("concluido_em")
+  criadoPor          String?           @map("criado_por") @db.Uuid
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+
+  cliente     Cliente               @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  funcionario Funcionario           @relation(fields: [funcionarioId], references: [id], onDelete: Restrict)
+  servico     Servico               @relation(fields: [servicoId], references: [id], onDelete: Restrict)
+  pagamentos  Pagamento[]
+  movimentos  MovimentacaoEstoque[]
+  fidelidade  TransacaoFidelidade[]
+
+  @@index([funcionarioId, inicio])
+  @@index([clienteId])
+  @@index([status, inicio])
+  @@map("agendamentos")
+}
+
+// RF04: código de 6 dígitos enviado por e-mail para o cliente ver os agendamentos
+model CodigoCliente {
+  id         String    @id @default(uuid()) @db.Uuid
+  email      String
+  codigoHash String    @map("codigo_hash")
+  expiraEm   DateTime  @map("expira_em")
+  tentativas Int       @default(0)
+  usadoEm    DateTime? @map("usado_em")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([email, createdAt])
+  @@map("codigos_cliente")
+}
+
+// ─── Fase 6: sinal e recebedor ───────────────────────────
+
+enum TipoSinal {
+  FIXO
+  PERCENTUAL
+}
+
+enum ModoSinal {
+  HERDAR
+  EXIGIR
+  NAO_EXIGIR
+}
+
+enum GatewayPagamento {
+  MERCADO_PAGO
+  SIMULADO // só para desenvolvimento e testes; recusado em produção
+}
+
+enum StatusPagamento {
+  PENDENTE
+  APROVADO
+  CANCELADO // cobrança cancelada (expirou sem pagar ou o agendamento foi cancelado antes)
+  RECEBIDO_APOS_EXPIRAR
+  REEMBOLSO_PENDENTE // falhou no gateway ou espera decisão do admin
+  REEMBOLSADO
+  RETIDO // cancelado fora do prazo ou falta: a empresa fica com o sinal (RF32)
+}
+
+enum TipoChavePix {
+  CPF
+  CNPJ
+  EMAIL
+  TELEFONE
+  ALEATORIA
+}
+
+// RF29–RF33
+model Pagamento {
+  id                String           @id @default(uuid()) @db.Uuid
+  agendamentoId     String           @map("agendamento_id") @db.Uuid
+  valorCentavos     Int              @map("valor_centavos")
+  status            StatusPagamento  @default(PENDENTE)
+  gateway           GatewayPagamento
+  gatewayPaymentId  String?          @unique @map("gateway_payment_id") // 9.3: idempotência
+  idempotencyKey    String           @unique @map("idempotency_key")
+  pixCopiaECola     String?          @map("pix_copia_e_cola")
+  pixQrBase64       String?          @map("pix_qr_base64")
+  expiraEm          DateTime         @map("expira_em")
+  pagoEm            DateTime?        @map("pago_em")
+  valorPagoCentavos Int?             @map("valor_pago_centavos")
+  reembolsadoEm     DateTime?        @map("reembolsado_em")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  agendamento Agendamento @relation(fields: [agendamentoId], references: [id], onDelete: Restrict)
+
+  @@index([agendamentoId])
+  @@index([status, expiraEm])
+  @@map("pagamentos")
+}
+
+// 9.3: cada evento do gateway é processado uma vez só
+model WebhookEvento {
+  id               String           @id @default(uuid()) @db.Uuid
+  gateway          GatewayPagamento
+  eventoId         String           @map("evento_id")
+  gatewayPaymentId String?          @map("gateway_payment_id")
+  tipo             String?
+  resultado        String?
+  recebidoEm       DateTime         @default(now()) @map("recebido_em")
+  processadoEm     DateTime?        @map("processado_em")
+
+  @@unique([gateway, eventoId])
+  @@map("webhook_eventos")
+}
+
+// RF34–RF37: quem recebe o sinal. Dados sensíveis cifrados com AES-256-GCM (9.3).
+// Uma linha só (id = 1).
+model Recebedor {
+  id                    Int              @id @default(1)
+  nome                  String // nome ou razão social
+  documentoCifrado      String           @map("documento_cifrado")
+  tipoChave             TipoChavePix     @map("tipo_chave")
+  chaveCifrada          String           @map("chave_cifrada")
+  banco                 String?
+  gateway               GatewayPagamento
+  tokenGatewayCifrado   String?          @map("token_gateway_cifrado") // access token do gateway
+  segredoWebhookCifrado String?          @map("segredo_webhook_cifrado") // assinatura HMAC do webhook
+  // Só os 4 últimos caracteres ficam em claro, para a tela (RF35)
+  finalDocumento        String           @map("final_documento")
+  finalChave            String           @map("final_chave")
+  finalToken            String?          @map("final_token")
+  finalSegredo          String?          @map("final_segredo")
+  testadoEm             DateTime?        @map("testado_em") // RF37: precisa testar antes de ativar
+  ativo                 Boolean          @default(false)
+  alteradoPor           String?          @map("alterado_por") @db.Uuid
+  createdAt             DateTime         @default(now()) @map("created_at")
+  updatedAt             DateTime         @updatedAt @map("updated_at")
+
+  @@map("recebedor")
+}
+
+// ─── Fase 7: estoque e ficha técnica ─────────────────────
+// Quantidades com 3 casas (ml, g, un) e custo por unidade em centavos com 4 casas:
+// 1 litro de R$ 47,00 dá 4,7 centavos por ml, e isso não cabe em inteiro.
+
+enum UnidadeProduto {
+  ML
+  G
+  UN
+}
+
+enum TipoMovimentacao {
+  ENTRADA // compra (recalcula o custo médio, RF42)
+  SAIDA // saída manual
+  AJUSTE // inventário: contou e corrigiu o saldo
+  PERDA // venceu, quebrou, derramou
+  CONSUMO // baixa automática ao concluir um atendimento (RF40)
+}
+
+// RF38
+model Produto {
+  id               String         @id @default(uuid()) @db.Uuid
+  nome             String
+  sku              String?        @unique
+  categoria        String?
+  unidade          UnidadeProduto
+  custoMedio       Decimal        @default(0) @map("custo_medio") @db.Decimal(14, 4) // centavos por unidade
+  estoqueAtual     Decimal        @default(0) @map("estoque_atual") @db.Decimal(14, 3)
+  estoqueMinimo    Decimal        @default(0) @map("estoque_minimo") @db.Decimal(14, 3)
+  fornecedor       String?
+  validade         DateTime?      @db.Date
+  alertaMinimoEm   DateTime?      @map("alerta_minimo_em") // RF41: avisa uma vez cada vez que fica abaixo
+  alertaValidadeEm DateTime?      @map("alerta_validade_em")
+  ativo            Boolean        @default(true)
+  deletedAt        DateTime?      @map("deleted_at")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+
+  movimentos MovimentacaoEstoque[]
+  fichas     FichaTecnicaItem[]
+
+  @@index([ativo, deletedAt])
+  @@map("produtos")
+}
+
+// RF39: histórico só de inserção (nunca editado). "quantidade" tem sinal: + entra, − sai.
+model MovimentacaoEstoque {
+  id            String           @id @default(uuid()) @db.Uuid
+  produtoId     String           @map("produto_id") @db.Uuid
+  tipo          TipoMovimentacao
+  quantidade    Decimal          @db.Decimal(14, 3)
+  custoUnitario Decimal          @map("custo_unitario") @db.Decimal(14, 4) // centavos por unidade naquele momento
+  saldoApos     Decimal          @map("saldo_apos") @db.Decimal(14, 3)
+  motivo        String?
+  usuarioId     String?          @map("usuario_id") @db.Uuid
+  agendamentoId String?          @map("agendamento_id") @db.Uuid
+  createdAt     DateTime         @default(now()) @map("created_at")
+
+  produto     Produto      @relation(fields: [produtoId], references: [id], onDelete: Restrict)
+  agendamento Agendamento? @relation(fields: [agendamentoId], references: [id], onDelete: Restrict)
+
+  @@index([produtoId, createdAt])
+  @@index([agendamentoId])
+  @@index([tipo, createdAt])
+  @@map("movimentacoes_estoque")
+}
+
+// RF14: quanto de cada produto um atendimento gasta
+model FichaTecnicaItem {
+  servicoId  String  @map("servico_id") @db.Uuid
+  produtoId  String  @map("produto_id") @db.Uuid
+  quantidade Decimal @db.Decimal(14, 3)
+
+  servico Servico @relation(fields: [servicoId], references: [id], onDelete: Cascade)
+  produto Produto @relation(fields: [produtoId], references: [id], onDelete: Restrict)
+
+  @@id([servicoId, produtoId])
+  @@map("fichas_tecnicas")
+}
+
+// RF14: custos que não são de estoque (ex.: descartáveis R$ 3,00)
+model CustoExtraServico {
+  id            String @id @default(uuid()) @db.Uuid
+  servicoId     String @map("servico_id") @db.Uuid
+  descricao     String
+  valorCentavos Int    @map("valor_centavos")
+
+  servico Servico @relation(fields: [servicoId], references: [id], onDelete: Cascade)
+
+  @@index([servicoId])
+  @@map("custos_extras_servico")
+}
+
+// ─── Fase 8: fidelidade ──────────────────────────────────
+
+enum TipoPrograma {
+  PONTOS // por real gasto e/ou por atendimento
+  SELOS // cartão de selos: 1 por atendimento (ex.: 10 cortes = 1 grátis)
+}
+
+// RF43: uma linha só (id = 1)
+model ProgramaFidelidade {
+  id                   Int          @id @default(1)
+  ativo                Boolean      @default(false)
+  tipo                 TipoPrograma @default(PONTOS)
+  pontosPorReal        Int          @default(1) @map("pontos_por_real") // PONTOS: a cada R$ 1 gasto
+  pontosPorAtendimento Int          @default(0) @map("pontos_por_atendimento") // PONTOS: bônus fixo por visita
+  servicosElegiveis    String[]     @default([]) @map("servicos_elegiveis") @db.Uuid // vazio = todos
+  validadeDias         Int?         @map("validade_dias") // pontos expiram depois de N dias; null = não expiram
+  updatedAt            DateTime     @updatedAt @map("updated_at")
+
+  @@map("programa_fidelidade")
+}
+
+enum TipoRecompensa {
+  DESCONTO // valor em reais
+  SERVICO // um serviço grátis
+  PRODUTO // um brinde
+}
+
+// RF44
+model Recompensa {
+  id            String         @id @default(uuid()) @db.Uuid
+  nome          String
+  descricao     String?
+  tipo          TipoRecompensa
+  custoPontos   Int            @map("custo_pontos")
+  valorCentavos Int?           @map("valor_centavos") // DESCONTO
+  servicoId     String?        @map("servico_id") @db.Uuid // SERVICO
+  validadeDias  Int            @default(30) @map("validade_dias") // o voucher vale N dias depois do resgate
+  ativo         Boolean        @default(true)
+  deletedAt     DateTime?      @map("deleted_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  resgates ResgateFidelidade[]
+
+  @@map("recompensas")
+}
+
+enum TipoTransacaoFidelidade {
+  CREDITO // atendimento concluído (RF45)
+  ESTORNO // atendimento cancelado depois de creditar (RF45)
+  RESGATE // trocou por recompensa
+  DEVOLUCAO // voucher cancelado: pontos voltam
+  AJUSTE // admin, com justificativa (RF46)
+  EXPIRACAO // venceram
+}
+
+// RF45, RF46: extrato. Só inserção (trigger no banco).
+// Pontos positivos guardam quanto ainda está "disponível" (FIFO: gasta primeiro o que vence antes).
+model TransacaoFidelidade {
+  id            String                  @id @default(uuid()) @db.Uuid
+  clienteId     String                  @map("cliente_id") @db.Uuid
+  tipo          TipoTransacaoFidelidade
+  pontos        Int // com sinal
+  disponivel    Int                     @default(0) // só créditos: o que ainda não foi gasto nem venceu
+  expiraEm      DateTime?               @map("expira_em")
+  agendamentoId String?                 @map("agendamento_id") @db.Uuid
+  resgateId     String?                 @map("resgate_id") @db.Uuid
+  motivo        String?
+  usuarioId     String?                 @map("usuario_id") @db.Uuid
+  createdAt     DateTime                @default(now()) @map("created_at")
+
+  cliente     Cliente      @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  agendamento Agendamento? @relation(fields: [agendamentoId], references: [id], onDelete: Restrict)
+
+  @@unique([agendamentoId, tipo]) // um crédito e um estorno por atendimento, no máximo
+  @@index([clienteId, createdAt])
+  @@index([expiraEm])
+  @@map("transacoes_fidelidade")
+}
+
+enum StatusResgate {
+  DISPONIVEL
+  USADO
+  CANCELADO
+  EXPIRADO
+}
+
+// RF44: voucher gerado no resgate, com código para usar no balcão
+model ResgateFidelidade {
+  id           String        @id @default(uuid()) @db.Uuid
+  clienteId    String        @map("cliente_id") @db.Uuid
+  recompensaId String        @map("recompensa_id") @db.Uuid
+  pontos       Int
+  codigo       String        @unique
+  status       StatusResgate @default(DISPONIVEL)
+  expiraEm     DateTime      @map("expira_em")
+  usadoEm      DateTime?     @map("usado_em")
+  usadoPor     String?       @map("usado_por") @db.Uuid
+  createdAt    DateTime      @default(now()) @map("created_at")
+
+  cliente    Cliente    @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  recompensa Recompensa @relation(fields: [recompensaId], references: [id], onDelete: Restrict)
+
+  @@index([clienteId, status])
+  @@map("resgates_fidelidade")
+}
+
+// ─── Fase 9: personalização e landing page ───────────────
+
+enum FinalidadeArquivo {
+  LOGO
+  BANNER
+  SERVICO
+  EQUIPE
+  GALERIA
+  POST // fundo de post do Instagram
+}
+
+// Imagens enviadas pelo painel (9.4): tipo conferido pelos bytes, reprocessadas com sharp
+// (sem metadados), nome aleatório. Ficam no S3 em produção (fora do servidor da API).
+model Arquivo {
+  id         String            @id @default(uuid()) @db.Uuid
+  chave      String            @unique // nome do arquivo no armazenamento (uuid.webp)
+  url        String
+  finalidade FinalidadeArquivo
+  largura    Int
+  altura     Int
+  bytes      Int
+  criadoPor  String?           @map("criado_por") @db.Uuid
+  createdAt  DateTime          @default(now()) @map("created_at")
+
+  @@index([finalidade, createdAt])
+  @@map("arquivos")
+}
+
+// RF07, RF08, RF10: visual e textos do site. O admin edita o rascunho, vê a prévia
+// e só então publica. Os dois são JSON validado pelo mesmo schema (Zod) no servidor.
+model Personalizacao {
+  id           Int       @id @default(1)
+  rascunho     Json
+  publicado    Json?
+  publicadoEm  DateTime? @map("publicado_em")
+  publicadoPor String?   @map("publicado_por") @db.Uuid
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@map("personalizacao")
+}
+
+// ─── Posts para o Instagram ──────────────────────────────
+// O painel monta a arte a partir de um modelo e dos dados do sistema; a imagem é gerada
+// no navegador na hora de baixar. Aqui fica só o conteúdo (validado), a legenda e o plano.
+
+enum FormatoPost {
+  QUADRADO // 1080 × 1080
+  RETRATO // 1080 × 1350
+  STORY // 1080 × 1920
+}
+
+enum StatusPost {
+  RASCUNHO
+  PRONTO
+  PUBLICADO
+}
+
+model PostInstagram {
+  id           String      @id @default(uuid()) @db.Uuid
+  titulo       String // nome interno, para achar depois
+  modelo       String // SERVICO, PROMOCAO, HORARIOS, DEPOIMENTO, EQUIPE, AVISO
+  formato      FormatoPost @default(RETRATO)
+  conteudo     Json // textos, imagem e cores (validados pela API)
+  legenda      String      @default("")
+  status       StatusPost  @default(RASCUNHO)
+  agendadoPara DateTime?   @map("agendado_para") @db.Date
+  criadoPor    String?     @map("criado_por") @db.Uuid
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  @@index([status, agendadoPara])
+  @@map("posts_instagram")
+}

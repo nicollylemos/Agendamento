@@ -1,0 +1,85 @@
+# Fase 3 — empresa, serviços e equipe. Precisa do accessToken de um admin
+# (veja auth.http). Use a extensão "REST Client" do VS Code.
+
+@api = http://localhost:3333/api/v1
+@accessToken = cole-aqui
+@servicoId = cole-aqui
+@funcionarioId = cole-aqui
+
+### RF06 — salvar dados da empresa
+PUT {{api}}/admin/empresa
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "nome": "Studio Bela",
+  "documento": "11.222.333/0001-81",
+  "whatsapp": "(15) 99999-0000",
+  "instagram": "@studiobela",
+  "cep": "18000-000",
+  "logradouro": "Rua Exemplo",
+  "numero": "100",
+  "bairro": "Centro",
+  "cidade": "Sorocaba",
+  "uf": "SP",
+  "horarioFuncionamento": [
+    { "diaSemana": 1, "abre": "09:00", "fecha": "18:00" },
+    { "diaSemana": 6, "abre": "09:00", "fecha": "13:00" }
+  ],
+  "politicaCancelamento": "Cancelamentos com até 24 h de antecedência têm o sinal devolvido."
+}
+
+### RF06 — como o cliente vê (sem login)
+GET {{api}}/public/empresa
+
+### Categorias
+POST {{api}}/admin/servicos/categorias
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "nome": "Cabelo" }
+
+### RF12 — criar serviço (preço em centavos: R$ 80,00 = 8000)
+POST {{api}}/admin/servicos
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "nome": "Corte feminino", "duracaoMin": 60, "precoCentavos": 8000, "intervaloLimpezaMin": 10 }
+
+### RF12 — listar (inclua ?incluirInativos=true para ver os desativados)
+GET {{api}}/admin/servicos
+Authorization: Bearer {{accessToken}}
+
+### RF12 — editar
+PATCH {{api}}/admin/servicos/{{servicoId}}
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "precoCentavos": 9000 }
+
+### Equipe — listar funcionários (pegue o id daqui)
+GET {{api}}/admin/funcionarios
+Authorization: Bearer {{accessToken}}
+
+### Equipe — editar perfil de atendimento
+PATCH {{api}}/admin/funcionarios/{{funcionarioId}}
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "cargo": "Cabeleireira", "comissaoPadraoPct": 30, "podeEditarHorario": true }
+
+### RF13 — quem executa o serviço (preço/duração próprios são opcionais)
+PUT {{api}}/admin/servicos/{{servicoId}}/equipe
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+[
+  { "funcionarioId": "{{funcionarioId}}" }
+]
+
+### RF12/RF13 — catálogo que o cliente vê
+GET {{api}}/public/servicos
+
+### RF12 — excluir (lógico)
+DELETE {{api}}/admin/servicos/{{servicoId}}
+Authorization: Bearer {{accessToken}}
